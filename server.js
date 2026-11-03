@@ -801,7 +801,13 @@ io.on("connection", socket => {
   // CLOSE ROOM: ONLY THELISS
   // ------------------------------------------------
 
-  socket.on("room:close", (ack = () => {}) => {
+  socket.on("room:close", (arg1, arg2) => {
+
+    // Accetta sia room:close(ack) sia room:close(data, ack)
+    const ack =
+      typeof arg1 === "function" ? arg1 :
+      typeof arg2 === "function" ? arg2 :
+      () => {};
 
     const key = socket.data.roomKey;
     const room = rooms.get(key);
