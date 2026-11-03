@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#080808">
+  <meta name="description" content="THELISS PRIVATE — temporary secure chat">
+  <title>THELISS PRIVATE</title>
+  <link rel="stylesheet" href="./styles.css">
+  <script src="https://cdn.socket.io/4.8.1/socket.io.min.js" defer></script>
+  <script src="./config.js" defer></script>
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <div class="scanlines" aria-hidden="true"></div>
+  <main class="shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="THELISS PRIVATE home">
+        <span class="brand-mark">T<span>.</span></span>
+        <span class="brand-copy"><strong>THELISS</strong><small>PRIVATE NETWORK</small></span>
+      </a>
+      <div class="status"><i></i><span>SYSTEM READY</span></div>
+    </header>
+
+    <section id="landing" class="landing">
+      <div class="eyebrow">ENCRYPTED // TEMPORARY // PRIVATE</div>
+      <h1>NO HISTORY.<br><em>NO TRACE.</em></h1>
+      <p class="intro">Una stanza riservata. Una chiave. Una conversazione che non viene archiviata dal server.</p>
+
+      <div class="entry-grid">
+        <form id="createForm" class="panel">
+          <div class="panel-index">01 / NEW SESSION</div>
+          <h2>Crea una stanza</h2>
+          <label for="createName">Il tuo nickname</label>
+          <input id="createName" maxlength="24" autocomplete="nickname" placeholder="Es. OPERATOR" required>
+          <button class="button button-gold" type="submit">GENERA CHIAVE <span>↗</span></button>
+          <p class="hint">Diventerai l'amministratore della stanza.</p>
+        </form>
+
+        <form id="joinForm" class="panel">
+          <div class="panel-index">02 / JOIN SESSION</div>
+          <h2>Entra in una stanza</h2>
+          <label for="joinKey">Chiave di accesso</label>
+          <input id="joinKey" maxlength="40" autocomplete="off" placeholder="Inserisci la chiave" required>
+          <label for="joinName">Il tuo nickname</label>
+          <input id="joinName" maxlength="24" autocomplete="nickname" placeholder="Come vuoi apparire?" required>
+          <button class="button button-outline" type="submit">STABILISCI CONNESSIONE <span>→</span></button>
+        </form>
+      </div>
+      <div id="landingError" class="notice" role="alert"></div>
+      <footer class="landing-footer"><span>THELISS CORPORATION</span><span>PRIVATE ACCESS ONLY</span></footer>
+    </section>
+
+    <section id="chatView" class="chat-view hidden">
+      <header class="room-head">
+        <div>
+          <div class="eyebrow">SECURE CHANNEL / ACTIVE</div>
+          <h1>PRIVATE <em>SESSION</em></h1>
+          <div class="room-key-line">KEY <code id="roomKeyDisplay">—</code><button id="copyKey" class="text-button" type="button">COPY KEY</button></div>
+        </div>
+        <div class="connected-box"><strong id="connectedCount">0</strong><span>CONNECTED</span></div>
+      </header>
+
+      <div class="workspace">
+        <aside class="members panel">
+          <div class="panel-index">NETWORK / MEMBERS</div>
+          <div class="members-title">Partecipanti <span id="memberCount">0</span></div>
+          <ul id="memberList"></ul>
+          <div class="members-foot"><i></i> LIVE CONNECTION</div>
+        </aside>
+
+        <section class="conversation panel">
+          <div class="conversation-top"><span>CHANNEL OPEN</span><span id="myRole">GUEST</span></div>
+          <div id="messages" class="messages" aria-live="polite">
+            <div class="empty-state"><span>///</span><p>Canale stabilito.<br>La conversazione non viene salvata come cronologia.</p></div>
+          </div>
+          <form id="messageForm" class="composer">
+            <input id="messageInput" maxlength="2000" autocomplete="off" placeholder="Scrivi un messaggio..." aria-label="Scrivi un messaggio" required>
+            <button type="submit" aria-label="Invia messaggio">SEND <b>↗</b></button>
+          </form>
+        </section>
+      </div>
+
+      <div class="room-actions">
+        <button id="leaveButton" class="button button-outline" type="button">LEAVE SESSION</button>
+        <button id="closeButton" class="button button-danger hidden" type="button">TERMINATE SESSION</button>
+      </div>
+      <p class="security-note">I messaggi non vengono archiviati dal server. La chiusura della stanza elimina i dati in memoria.</p>
+    </section>
+    <div id="toast" class="toast" role="status"></div>
+  </main>
+</body>
+</html>
