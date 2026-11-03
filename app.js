@@ -1,14 +1,24 @@
-```javascript
 "use strict";
 
 // ==================================================
-// THELISS PRIVATE — APP.JS
-// Compatible with the existing index.html and server.js
+// THELISS PRIVATE - APP.JS (versione corretta)
+// Compatibile con index.html e server.js esistenti
 // ==================================================
+
+if (typeof io !== "function") {
+  document.body.textContent =
+    "Errore: socket.io non caricato. Includi lo script di socket.io in index.html PRIMA di app.js.";
+  throw new Error("socket.io non caricato");
+}
 
 const socket = io(window.TL_SERVER_URL || undefined);
 
 const $ = id => document.getElementById(id);
+
+// Aggancia un evento solo se l'elemento esiste
+function on(el, eventName, handler) {
+  if (el) el.addEventListener(eventName, handler);
+}
 
 // --------------------------------------------------
 // DOM
@@ -33,6 +43,15 @@ const messageInput = $("messageInput");
 const leaveButton = $("leaveButton");
 const closeButton = $("closeButton");
 
+// Diagnostica: segnala in console gli ID mancanti in index.html
+Object.entries({
+  landing, chatView, createForm, joinForm, createName: createNameInput,
+  joinName: joinNameInput, joinKey: joinKeyInput, messages, memberList,
+  messageForm, messageInput, leaveButton, closeButton
+}).forEach(([name, el]) => {
+  if (!el) console.error("[TheLiss] Elemento mancante in index.html: #" + name);
+});
+
 // --------------------------------------------------
 // STATE
 // --------------------------------------------------
@@ -44,14 +63,12 @@ let myRole = "guest";
 let isAdmin = false;
 let canCapture = false;
 
-let adminToken = null;
-let adminPassword = "";
+// Credenziali tenute SOLO in memoria per la riconnessione automatica
+let session = null; // { key, name, password, admin, token }
 
-let currentAuth = false;
 let protectionOverlay = null;
-
 let toastTimer = null;
-let reconnecting = false;
+let resuming = false;
 
 // --------------------------------------------------
 // UTILITIES
@@ -65,10 +82,7 @@ function showToast(message) {
   el.classList.add("show");
 
   clearTimeout(toastTimer);
-
-  toastTimer = setTimeout(() => {
-    el.classList.remove("show");
-  }, 2500);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 2500);
 }
 
 function showError(message = "") {
@@ -81,9 +95,13 @@ function clearError() {
 }
 
 function clearAdminSession() {
-  sessionStorage.removeItem("tl_admin_key");
-  sessionStorage.removeItem("tl_admin_token");
-  sessionStorage.removeItem("tl_admin_name");
+  try {
+    sessionStorage.removeItem("tl_admin_key");
+    sessionStorage.removeItem("tl_admin_token");
+    sessionStorage.removeItem("tl_admin_name");
+  } catch {
+    /* sessionStorage non disponibile */
+  }
 }
 
 function setButtonLoading(button, loading, originalText) {
@@ -107,10 +125,7 @@ function emitWithTimeout(event, data, callback, timeout = 10000) {
     if (completed) return;
     completed = true;
 
-    callback({
-      ok: false,
-      error: "Il server non ha risposto. Riprova."
-    });
+    callback({ ok: false, error: "Il server non ha risposto. Riprova." });
   }, timeout);
 
   socket.emit(event, data, result => {
@@ -119,10 +134,7 @@ function emitWithTimeout(event, data, callback, timeout = 10000) {
     completed = true;
     clearTimeout(timer);
 
-    callback(result || {
-      ok: false,
-      error: "Risposta non valida dal server."
-    });
+    callback(result || { ok: false, error: "Risposta non valida dal server." });
   });
 }
 
@@ -140,11 +152,9 @@ function makePasswordField(id, placeholder) {
   input.required = false;
   input.autocomplete = "off";
 
-  input.style.cssText = `
-    margin-top:10px;
-    width:100%;
-    box-sizing:border-box;
-  `;
+  input.style.marginTop = "10px";
+  input.style.width = "100%";
+  input.style.boxSizing = "border-box";
 
   return input;
 }
@@ -159,16 +169,12 @@ const joinPassword = makePasswordField(
   "Password account autorizzato"
 );
 
-// Password amministratore.
-createNameInput.insertAdjacentElement(
-  "afterend",
-  createPassword
-);
-
+// Password amministratore
 createPassword.autocomplete = "new-password";
 createPassword.required = true;
+createNameInput?.insertAdjacentElement("afterend", createPassword);
 
-// Accesso ospite oppure account autorizzato.
+// Accesso ospite oppure account autorizzato
 joinPassword.hidden = true;
 
 const passwordToggle = document.createElement("button");
@@ -176,26 +182,17 @@ const passwordToggle = document.createElement("button");
 passwordToggle.type = "button";
 passwordToggle.className = "text-button";
 passwordToggle.textContent = "SONO UN UTENTE AUTORIZZATO";
-
 passwordToggle.style.marginTop = "10px";
 
-joinNameInput.insertAdjacentElement(
-  "afterend",
-  passwordToggle
-);
-
-passwordToggle.insertAdjacentElement(
-  "afterend",
-  joinPassword
-);
+joinNameInput?.insertAdjacentElement("afterend", passwordToggle);
+passwordToggle.insertAdjacentElement("afterend", joinPassword);
 
 passwordToggle.addEventListener("click", () => {
   joinPassword.hidden = !joinPassword.hidden;
 
   if (joinPassword.hidden) {
     joinPassword.value = "";
-    passwordToggle.textContent =
-      "SONO UN UTENTE AUTORIZZATO";
+    passwordToggle.textContent = "SONO UN UTENTE AUTORIZZATO";
   } else {
     passwordToggle.textContent = "NASCONDI PASSWORD";
     joinPassword.focus();
@@ -208,10 +205,7 @@ passwordToggle.addEventListener("click", () => {
 
 function authenticate(name, password, callback) {
   if (!socket.connected) {
-    callback({
-      ok: false,
-      error: "Server non raggiungibile."
-    });
+    callback({ ok: false, error: "Server non raggiungibile." });
     return;
   }
 
@@ -233,18 +227,7 @@ function authenticate(name, password, callback) {
     isAdmin = result.role === "admin";
     canCapture = result.canCapture === true;
 
-    currentAuth = true;
-
-    if (isAdmin) {
-      adminPassword = password;
-    } else {
-      adminPassword = "";
-    }
-
-    callback({
-      ok: true,
-      ...result
-    });
+    callback({ ...result, ok: true });
   });
 }
 
@@ -252,7 +235,7 @@ function authenticate(name, password, callback) {
 // ROOM INTERFACE
 // --------------------------------------------------
 
-function enterRoom({ key, name, admin, token }) {
+function enterRoom({ key, name, admin, token, preserve = false }) {
   currentKey = key;
   myName = name;
 
@@ -260,75 +243,78 @@ function enterRoom({ key, name, admin, token }) {
   canCapture = isAdmin;
 
   myRole = isAdmin ? "admin" : myRole;
-  adminToken = token || null;
 
-  landing.classList.add("hidden");
-  chatView.classList.remove("hidden");
+  landing?.classList.add("hidden");
+  chatView?.classList.remove("hidden");
 
-  $("roomKeyDisplay").textContent = key;
+  const keyDisplay = $("roomKeyDisplay");
+  if (keyDisplay) keyDisplay.textContent = key;
 
-  $("myRole").textContent = isAdmin
-    ? "ADMINISTRATOR"
-    : myRole.toUpperCase();
+  const roleDisplay = $("myRole");
+  if (roleDisplay) {
+    roleDisplay.textContent = isAdmin ? "ADMINISTRATOR" : myRole.toUpperCase();
+  }
 
-  closeButton.classList.toggle("hidden", !isAdmin);
+  closeButton?.classList.toggle("hidden", !isAdmin);
 
-  messages.replaceChildren();
+  // Dopo una riconnessione si mantiene la conversazione già a schermo
+  if (!preserve) {
+    messages.replaceChildren();
 
-  const empty = document.createElement("div");
-  empty.className = "empty-state";
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
 
-  const marker = document.createElement("span");
-  marker.textContent = "///";
+    const marker = document.createElement("span");
+    marker.textContent = "///";
 
-  const description = document.createElement("p");
-  description.textContent =
-    "Canale stabilito. La conversazione non viene salvata come cronologia.";
+    const description = document.createElement("p");
+    description.textContent =
+      "Canale stabilito. La conversazione non viene salvata come cronologia.";
 
-  empty.append(marker, description);
-  messages.append(empty);
+    empty.append(marker, description);
+    messages.append(empty);
+  }
 
   if (isAdmin && token) {
-    sessionStorage.setItem("tl_admin_key", key);
-    sessionStorage.setItem("tl_admin_token", token);
-    sessionStorage.setItem("tl_admin_name", name);
+    try {
+      sessionStorage.setItem("tl_admin_key", key);
+      sessionStorage.setItem("tl_admin_token", token);
+      sessionStorage.setItem("tl_admin_name", name);
+    } catch {
+      /* sessionStorage non disponibile */
+    }
   }
 
   updateCaptureProtection();
   renderAdminPanel();
 
-  messageInput.focus();
+  messageInput?.focus();
 }
 
 function backToLanding(message = "") {
   currentKey = null;
+  session = null;
   isAdmin = false;
   canCapture = false;
+  myRole = "guest";
 
-  adminToken = null;
-  currentAuth = false;
+  landing?.classList.remove("hidden");
+  chatView?.classList.add("hidden");
 
-  landing.classList.remove("hidden");
-  chatView.classList.add("hidden");
+  messages?.replaceChildren();
+  memberList?.replaceChildren();
 
-  messages.replaceChildren();
-  memberList.replaceChildren();
-
-  $("connectedCount").textContent = "0";
-  $("memberCount").textContent = "0";
+  const connected = $("connectedCount");
+  const members = $("memberCount");
+  if (connected) connected.textContent = "0";
+  if (members) members.textContent = "0";
 
   removeAdminPanel();
   updateCaptureProtection();
 
+  document.title = "THELISS PRIVATE";
+
   showError(message);
-}
-
-function leaveRoomLocally() {
-  if (currentKey) {
-    socket.emit("room:leave");
-  }
-
-  backToLanding();
 }
 
 // --------------------------------------------------
@@ -342,28 +328,20 @@ function addMessage(data) {
   if (empty) empty.remove();
 
   const box = document.createElement("article");
-
-  box.className =
-    "message" + (data.name === myName ? " mine" : "");
+  box.className = "message" + (data.name === myName ? " mine" : "");
 
   const meta = document.createElement("div");
   meta.className = "message-meta";
 
   const who = document.createElement("span");
-
-  who.textContent =
-    data.name + (data.isAdmin ? " / ADMIN" : "");
+  who.textContent = data.name + (data.isAdmin ? " / ADMIN" : "");
 
   const when = document.createElement("time");
-
   const date = new Date(data.time);
 
   when.textContent = Number.isNaN(date.getTime())
     ? ""
-    : date.toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit"
-      });
+    : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
   meta.append(who, when);
 
@@ -378,11 +356,12 @@ function addMessage(data) {
 }
 
 function addSystem(text) {
+  if (!messages) return;
+
   const empty = messages.querySelector(".empty-state");
   if (empty) empty.remove();
 
   const el = document.createElement("div");
-
   el.className = "system-message";
   el.textContent = text || "";
 
@@ -397,8 +376,10 @@ function addSystem(text) {
 function updateMembers(state) {
   if (!state || !Array.isArray(state.people)) return;
 
-  $("connectedCount").textContent = state.count;
-  $("memberCount").textContent = state.count;
+  const connected = $("connectedCount");
+  const members = $("memberCount");
+  if (connected) connected.textContent = state.count;
+  if (members) members.textContent = state.count;
 
   memberList.replaceChildren();
 
@@ -407,15 +388,12 @@ function updateMembers(state) {
 
     const label = document.createElement("span");
     label.textContent = person.name;
-
     li.append(label);
 
     if (person.isAdmin) {
       const tag = document.createElement("span");
-
       tag.className = "admin-tag";
       tag.textContent = "ADMIN";
-
       li.append(tag);
     }
 
@@ -429,20 +407,14 @@ function updateMembers(state) {
 
 function removeAdminPanel() {
   const panel = $("adminPanel");
-
   if (panel) panel.remove();
 }
 
 function createAdminElement(tag, text, className) {
   const el = document.createElement(tag);
 
-  if (text !== undefined) {
-    el.textContent = text;
-  }
-
-  if (className) {
-    el.className = className;
-  }
+  if (text !== undefined) el.textContent = text;
+  if (className) el.className = className;
 
   return el;
 }
@@ -450,62 +422,39 @@ function createAdminElement(tag, text, className) {
 function renderAdminPanel() {
   removeAdminPanel();
 
-  if (!isAdmin || !currentKey) return;
+  if (!isAdmin || !currentKey || !chatView) return;
 
   const panel = document.createElement("section");
-
   panel.id = "adminPanel";
 
-  panel.style.cssText = `
-    margin:16px 0;
-    padding:18px;
-    border:1px solid #b89443;
-    border-radius:10px;
-    background:#111;
-    color:#eee;
-  `;
+  panel.style.cssText =
+    "margin:16px 0;padding:18px;border:1px solid #b89443;" +
+    "border-radius:10px;background:#111;color:#eee;";
 
-  const title = createAdminElement(
-    "h2",
-    "THELISS ADMINISTRATION"
-  );
-
+  const title = createAdminElement("h2", "THELISS ADMINISTRATION");
   title.style.color = "#d6b45c";
 
-  const subtitle = createAdminElement(
-    "p",
-    "Gestione account autorizzati"
-  );
+  const subtitle = createAdminElement("p", "Gestione account autorizzati");
+
+  const inputStyle =
+    "width:100%;box-sizing:border-box;margin:6px 0;padding:10px;";
 
   const nameInput = document.createElement("input");
-
   nameInput.id = "adminNewName";
   nameInput.placeholder = "Nickname nuovo account";
   nameInput.maxLength = 24;
   nameInput.autocomplete = "off";
-
-  nameInput.style.cssText = `
-    width:100%;
-    box-sizing:border-box;
-    margin:6px 0;
-    padding:10px;
-  `;
+  nameInput.style.cssText = inputStyle;
 
   const passwordInput = document.createElement("input");
-
   passwordInput.id = "adminNewPassword";
   passwordInput.type = "password";
   passwordInput.placeholder = "Password (minimo 10 caratteri)";
   passwordInput.maxLength = 128;
   passwordInput.autocomplete = "new-password";
+  passwordInput.style.cssText = inputStyle;
 
-  passwordInput.style.cssText = nameInput.style.cssText;
-
-  const addButton = createAdminElement(
-    "button",
-    "CREA ACCOUNT"
-  );
-
+  const addButton = createAdminElement("button", "CREA ACCOUNT");
   addButton.type = "button";
 
   addButton.addEventListener("click", () => {
@@ -524,10 +473,7 @@ function renderAdminPanel() {
 
     setButtonLoading(addButton, true);
 
-    emitWithTimeout("admin:account:create", {
-      name,
-      password
-    }, result => {
+    emitWithTimeout("admin:account:create", { name, password }, result => {
       setButtonLoading(addButton, false, "CREA ACCOUNT");
 
       if (!result?.ok) {
@@ -543,24 +489,14 @@ function renderAdminPanel() {
     });
   });
 
-  const listTitle = createAdminElement(
-    "h3",
-    "ACCOUNT REGISTRATI"
-  );
-
+  const listTitle = createAdminElement("h3", "ACCOUNT REGISTRATI");
   listTitle.style.marginTop = "22px";
 
   const list = createAdminElement("div");
   list.id = "adminAccounts";
 
   panel.append(
-    title,
-    subtitle,
-    nameInput,
-    passwordInput,
-    addButton,
-    listTitle,
-    list
+    title, subtitle, nameInput, passwordInput, addButton, listTitle, list
   );
 
   chatView.prepend(panel);
@@ -582,61 +518,40 @@ function loadAdminAccounts() {
 
     list.replaceChildren();
 
-    if (!Array.isArray(result.accounts) ||
-        result.accounts.length === 0) {
-      list.append(
-        createAdminElement("p", "Nessun account secondario.")
-      );
+    if (!Array.isArray(result.accounts) || result.accounts.length === 0) {
+      list.append(createAdminElement("p", "Nessun account secondario."));
       return;
     }
 
     result.accounts.forEach(account => {
       const row = document.createElement("div");
 
-      row.style.cssText = `
-        display:flex;
-        flex-wrap:wrap;
-        align-items:center;
-        justify-content:space-between;
-        gap:8px;
-        padding:10px 0;
-        border-bottom:1px solid #333;
-      `;
+      row.style.cssText =
+        "display:flex;flex-wrap:wrap;align-items:center;" +
+        "justify-content:space-between;gap:8px;padding:10px 0;" +
+        "border-bottom:1px solid #333;";
 
-      const label = createAdminElement(
-        "span",
-        account.nickname
-      );
+      const label = createAdminElement("span", account.nickname);
 
       const actions = document.createElement("div");
+      actions.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;";
 
-      actions.style.cssText = `
-        display:flex;
-        flex-wrap:wrap;
-        gap:6px;
-      `;
-
-      // EDIT ACCOUNT
-
-      const editButton = createAdminElement(
-        "button",
-        "MODIFICA"
-      );
-
+      // MODIFICA ACCOUNT
+      const editButton = createAdminElement("button", "MODIFICA");
       editButton.type = "button";
 
       editButton.addEventListener("click", () => {
-        const newName = prompt(
-          "Nuovo nickname:",
-          account.nickname
-        );
-
+        const newName = prompt("Nuovo nickname:", account.nickname);
         if (newName === null) return;
+
+        if (!newName.trim()) {
+          showToast("Il nickname non può essere vuoto.");
+          return;
+        }
 
         const newPassword = prompt(
           "Nuova password (lascia vuoto per mantenerla):"
         );
-
         if (newPassword === null) return;
 
         if (newPassword && newPassword.length < 10) {
@@ -659,13 +574,8 @@ function loadAdminAccounts() {
         });
       });
 
-      // REVOKE ACCOUNT
-
-      const revokeButton = createAdminElement(
-        "button",
-        "REVOCA"
-      );
-
+      // REVOCA ACCOUNT
+      const revokeButton = createAdminElement("button", "REVOCA");
       revokeButton.type = "button";
 
       revokeButton.addEventListener("click", () => {
@@ -694,7 +604,7 @@ function loadAdminAccounts() {
 }
 
 // --------------------------------------------------
-// PRIVACY OVERLAY
+// PRIVACY OVERLAY (best effort, solo lato client)
 // --------------------------------------------------
 
 function updateCaptureProtection() {
@@ -703,7 +613,6 @@ function updateCaptureProtection() {
       protectionOverlay.remove();
       protectionOverlay = null;
     }
-
     return;
   }
 
@@ -713,19 +622,11 @@ function updateCaptureProtection() {
     protectionOverlay.id = "captureProtection";
     protectionOverlay.textContent = "SESSION PROTECTED";
 
-    protectionOverlay.style.cssText = `
-      display:none;
-      position:fixed;
-      inset:0;
-      z-index:999999;
-      background:#000;
-      color:#d6b45c;
-      align-items:center;
-      justify-content:center;
-      font-size:20px;
-      letter-spacing:4px;
-      font-weight:bold;
-    `;
+    protectionOverlay.style.cssText =
+      "display:none;position:fixed;inset:0;z-index:999999;" +
+      "background:#000;color:#d6b45c;align-items:center;" +
+      "justify-content:center;font-size:20px;letter-spacing:4px;" +
+      "font-weight:bold;";
 
     document.body.append(protectionOverlay);
   }
@@ -733,27 +634,18 @@ function updateCaptureProtection() {
 
 function obscureForNonAdmin() {
   if (!currentKey || canCapture) return;
-
-  if (protectionOverlay) {
-    protectionOverlay.style.display = "flex";
-  }
+  if (protectionOverlay) protectionOverlay.style.display = "flex";
 }
 
 function revealForNonAdmin() {
   if (!currentKey || canCapture) return;
-
-  if (protectionOverlay) {
-    protectionOverlay.style.display = "none";
-  }
+  if (protectionOverlay) protectionOverlay.style.display = "none";
 }
 
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     obscureForNonAdmin();
-
-    if (currentKey) {
-      document.title = "SESSION HIDDEN";
-    }
+    if (currentKey) document.title = "SESSION HIDDEN";
   } else {
     revealForNonAdmin();
     document.title = "THELISS PRIVATE";
@@ -767,7 +659,7 @@ window.addEventListener("focus", revealForNonAdmin);
 // CREATE ROOM
 // --------------------------------------------------
 
-createForm.addEventListener("submit", event => {
+on(createForm, "submit", event => {
   event.preventDefault();
   clearError();
 
@@ -779,30 +671,39 @@ createForm.addEventListener("submit", event => {
     return;
   }
 
-  const submitButton = createForm.querySelector(
-    'button[type="submit"]'
-  );
-
+  const submitButton = createForm.querySelector('button[type="submit"]');
   setButtonLoading(submitButton, true);
 
   authenticate(name, password, auth => {
-    setButtonLoading(submitButton, false);
-
     if (!auth.ok) {
+      setButtonLoading(submitButton, false);
       showError(auth.error);
       return;
     }
 
     if (auth.role !== "admin") {
+      setButtonLoading(submitButton, false);
       showError("Solo TheLiss può creare una stanza.");
       return;
     }
 
     emitWithTimeout("room:create", {}, result => {
+      setButtonLoading(submitButton, false);
+
       if (!result?.ok) {
         showError(result?.error || "Impossibile creare la stanza.");
         return;
       }
+
+      session = {
+        key: result.key,
+        name: result.name,
+        password,
+        admin: true,
+        token: result.adminToken
+      };
+
+      createPassword.value = "";
 
       enterRoom({
         key: result.key,
@@ -820,30 +721,23 @@ createForm.addEventListener("submit", event => {
 // JOIN ROOM
 // --------------------------------------------------
 
-joinForm.addEventListener("submit", event => {
+on(joinForm, "submit", event => {
   event.preventDefault();
   clearError();
 
   const key = joinKeyInput.value.trim();
   const name = joinNameInput.value.trim();
 
-  // IMPORTANT:
-  // If the password field is hidden, ALWAYS send an empty password.
-  // This prevents browser autofill from accidentally blocking guests.
-
-  const password = joinPassword.hidden
-    ? ""
-    : joinPassword.value;
+  // Se il campo password è nascosto si invia SEMPRE una password vuota,
+  // così l'autofill del browser non blocca gli ospiti.
+  const password = joinPassword.hidden ? "" : joinPassword.value;
 
   if (!key || !name) {
     showError("Inserisci la chiave della stanza e il nickname.");
     return;
   }
 
-  const submitButton = joinForm.querySelector(
-    'button[type="submit"]'
-  );
-
+  const submitButton = joinForm.querySelector('button[type="submit"]');
   setButtonLoading(submitButton, true);
 
   authenticate(name, password, auth => {
@@ -855,23 +749,25 @@ joinForm.addEventListener("submit", event => {
 
     if (auth.role === "admin") {
       setButtonLoading(submitButton, false);
-
-      showError(
-        "TheLiss deve utilizzare il modulo di creazione."
-      );
-
+      showError("TheLiss deve utilizzare il modulo di creazione.");
       return;
     }
 
-    emitWithTimeout("room:join", {
-      key
-    }, result => {
+    emitWithTimeout("room:join", { key }, result => {
       setButtonLoading(submitButton, false);
 
       if (!result?.ok) {
         showError(result?.error || "Accesso non riuscito.");
         return;
       }
+
+      session = {
+        key: result.key,
+        name: result.name,
+        password,
+        admin: false,
+        token: null
+      };
 
       enterRoom({
         key: result.key,
@@ -881,9 +777,7 @@ joinForm.addEventListener("submit", event => {
 
       joinPassword.value = "";
       joinPassword.hidden = true;
-
-      passwordToggle.textContent =
-        "SONO UN UTENTE AUTORIZZATO";
+      passwordToggle.textContent = "SONO UN UTENTE AUTORIZZATO";
     });
   });
 });
@@ -892,7 +786,7 @@ joinForm.addEventListener("submit", event => {
 // SEND MESSAGE
 // --------------------------------------------------
 
-messageForm.addEventListener("submit", event => {
+on(messageForm, "submit", event => {
   event.preventDefault();
 
   const text = messageInput.value.trim();
@@ -906,9 +800,7 @@ messageForm.addEventListener("submit", event => {
 
   messageInput.value = "";
 
-  emitWithTimeout("chat:message", {
-    text
-  }, result => {
+  emitWithTimeout("chat:message", { text }, result => {
     if (!result?.ok) {
       showToast(result?.error || "Messaggio non inviato.");
       messageInput.value = text;
@@ -922,7 +814,7 @@ messageForm.addEventListener("submit", event => {
 // COPY ROOM KEY
 // --------------------------------------------------
 
-$("copyKey").addEventListener("click", async () => {
+on($("copyKey"), "click", async () => {
   if (!currentKey) return;
 
   try {
@@ -937,7 +829,7 @@ $("copyKey").addEventListener("click", async () => {
 // LEAVE ROOM
 // --------------------------------------------------
 
-leaveButton.addEventListener("click", () => {
+on(leaveButton, "click", () => {
   if (!currentKey) return;
 
   if (isAdmin) {
@@ -957,7 +849,7 @@ leaveButton.addEventListener("click", () => {
 // CLOSE ROOM
 // --------------------------------------------------
 
-closeButton.addEventListener("click", () => {
+on(closeButton, "click", () => {
   if (!isAdmin || !currentKey) return;
 
   if (!confirm(
@@ -971,7 +863,6 @@ closeButton.addEventListener("click", () => {
     }
 
     clearAdminSession();
-
     backToLanding("Sessione terminata.");
   });
 });
@@ -985,70 +876,70 @@ socket.on("room:state", updateMembers);
 socket.on("chat:message", addMessage);
 
 socket.on("chat:system", data => {
-  if (data?.text) {
-    addSystem(data.text);
-  }
+  if (data?.text) addSystem(data.text);
 });
 
 socket.on("room:closed", () => {
   clearAdminSession();
-
-  backToLanding(
-    "La sessione è stata terminata dall'amministratore."
-  );
+  backToLanding("La sessione è stata terminata dall'amministratore.");
 });
 
 // --------------------------------------------------
-// ADMIN RECONNECTION
+// RICONNESSIONE AUTOMATICA (admin e utenti)
 // --------------------------------------------------
 
-function tryAdminReconnect() {
-  if (reconnecting || !socket.connected) return;
+function resumeSession() {
+  if (resuming || !socket.connected || !session || !currentKey) return;
 
-  const key = sessionStorage.getItem("tl_admin_key");
-  const token = sessionStorage.getItem("tl_admin_token");
+  resuming = true;
 
-  if (!key || !token || !adminPassword) return;
+  const s = session;
 
-  reconnecting = true;
+  const fail = () => {
+    resuming = false;
+    if (s.admin) clearAdminSession();
+    backToLanding("Impossibile riprendere la sessione.");
+  };
 
   emitWithTimeout("auth:login", {
-    name: "TheLiss",
-    password: adminPassword
+    name: s.name,
+    password: s.password || ""
   }, auth => {
     if (!auth?.ok) {
-      reconnecting = false;
+      fail();
       return;
     }
 
+    myName = auth.name;
+    myRole = auth.role;
     isAdmin = auth.role === "admin";
     canCapture = auth.canCapture === true;
-    currentAuth = true;
 
-    emitWithTimeout("room:resume", {
-      key,
-      token
-    }, result => {
-      reconnecting = false;
+    const event = s.admin ? "room:resume" : "room:join";
+    const payload = s.admin ? { key: s.key, token: s.token } : { key: s.key };
 
-      if (result?.ok) {
-        enterRoom({
-          key,
-          name: "TheLiss",
-          admin: true,
-          token
-        });
-      } else {
-        clearAdminSession();
-        showToast("Non è stato possibile riprendere la stanza.");
+    emitWithTimeout(event, payload, result => {
+      resuming = false;
+
+      if (!result?.ok) {
+        fail();
+        return;
       }
+
+      enterRoom({
+        key: s.key,
+        name: s.name,
+        admin: s.admin,
+        token: s.token,
+        preserve: true
+      });
+
+      showToast("Connessione ripristinata.");
     });
   });
 }
 
-socket.on("connect", () => {
-  tryAdminReconnect();
-});
+socket.on("connect", resumeSession);
 
 socket.on("disconnect", () => {
   if (currentKey) {
@@ -1057,43 +948,31 @@ socket.on("disconnect", () => {
 });
 
 socket.on("connect_error", () => {
-  showError(
-    "Server non raggiungibile. Controlla il server Render."
-  );
+  if (!currentKey) {
+    showError("Server non raggiungibile. Controlla il server Render.");
+  }
 });
 
 // --------------------------------------------------
 // BEST-EFFORT COPY PROTECTION
+// (scoraggia l'uso occasionale, non impedisce screenshot
+//  o copie con strumenti esterni)
 // --------------------------------------------------
 
-document.addEventListener("contextmenu", event => {
-  event.preventDefault();
-});
-
-document.addEventListener("copy", event => {
-  event.preventDefault();
-});
-
-document.addEventListener("cut", event => {
-  event.preventDefault();
-});
+document.addEventListener("contextmenu", event => event.preventDefault());
+document.addEventListener("copy", event => event.preventDefault());
+document.addEventListener("cut", event => event.preventDefault());
 
 document.addEventListener("paste", event => {
   if (event.target?.id === "joinKey") return;
-
   event.preventDefault();
 });
 
 document.addEventListener("keydown", event => {
-  const key = event.key.toLowerCase();
+  const key = (event.key || "").toLowerCase();
 
   if (event.ctrlKey || event.metaKey) {
-    if (
-      key === "v" &&
-      event.target?.id === "joinKey"
-    ) {
-      return;
-    }
+    if (key === "v" && event.target?.id === "joinKey") return;
 
     if (["c", "x", "v", "s", "p", "u"].includes(key)) {
       event.preventDefault();
@@ -1106,6 +985,4 @@ document.addEventListener("keydown", event => {
 // --------------------------------------------------
 
 document.title = "THELISS PRIVATE";
-
 showError("");
-```
