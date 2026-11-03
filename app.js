@@ -128,14 +128,21 @@ function emitWithTimeout(event, data, callback, timeout = 10000) {
     callback({ ok: false, error: "Il server non ha risposto. Riprova." });
   }, timeout);
 
-  socket.emit(event, data, result => {
+  const onAck = result => {
     if (completed) return;
 
     completed = true;
     clearTimeout(timer);
 
     callback(result || { ok: false, error: "Risposta non valida dal server." });
-  });
+  };
+
+  // data === undefined: si invia solo la callback (es. room:close)
+  if (data === undefined) {
+    socket.emit(event, onAck);
+  } else {
+    socket.emit(event, data, onAck);
+  }
 }
 
 // --------------------------------------------------
@@ -169,10 +176,21 @@ const joinPassword = makePasswordField(
   "Password account autorizzato"
 );
 
-// Password amministratore
+// Password amministratore: compare SOLO se il nickname è "TheLiss"
 createPassword.autocomplete = "new-password";
-createPassword.required = true;
 createNameInput?.insertAdjacentElement("afterend", createPassword);
+
+function syncCreatePassword() {
+  const show = isAdminName(createNameInput?.value);
+
+  createPassword.hidden = !show;
+  createPassword.required = show;
+
+  if (!show) createPassword.value = "";
+}
+
+on(createNameInput, "input", syncCreatePassword);
+syncCreatePassword();
 
 // Accesso ospite oppure account autorizzato
 joinPassword.hidden = true;
@@ -203,6 +221,22 @@ passwordToggle.addEventListener("click", () => {
 // AUTHENTICATION
 // --------------------------------------------------
 
+function isAdminName(name) {
+  return String(name || "").trim().toLowerCase() === "theliss";
+}
+
+// Il nickname è un account registrato e richiede la password
+function isPasswordRequired(result) {
+  return result?.code === "PASSWORD_REQUIRED" ||
+    /richiede una password/i.test(result?.error || "");
+}
+
+// Il nickname NON è registrato: la password non serve
+function isNotRegistered(result) {
+  return result?.code === "NOT_REGISTERED" ||
+    /non registrato/i.test(result?.error || "");
+}
+
 function authenticate(name, password, callback) {
   if (!socket.connected) {
     callback({ ok: false, error: "Server non raggiungibile." });
@@ -216,6 +250,7 @@ function authenticate(name, password, callback) {
     if (!result?.ok) {
       callback({
         ok: false,
+        code: result?.code,
         error: result?.error || "Autenticazione non riuscita."
       });
       return;
@@ -666,8 +701,19 @@ on(createForm, "submit", event => {
   const name = createNameInput.value.trim();
   const password = createPassword.value;
 
-  if (!name || !password) {
-    showError("Inserisci nickname e password amministratore.");
+  if (!name) {
+    showError("Inserisci il nickname.");
+    return;
+  }
+
+  // Nickname diverso da TheLiss: nessuna richiesta di password admin
+  if (!isAdminName(name)) {
+    showError("Solo TheLiss può creare una stanza. Per entrare in una stanza usa il modulo a destra.");
+    return;
+  }
+
+  if (!password) {
+    showError("Inserisci la password amministratore.");
     return;
   }
 
@@ -728,19 +774,24 @@ on(joinForm, "submit", event => {
   const key = joinKeyInput.value.trim();
   const name = joinNameInput.value.trim();
 
-  // Se il campo password è nascosto si invia SEMPRE una password vuota,
-  // così l'autofill del browser non blocca gli ospiti.
-  const password = joinPassword.hidden ? "" : joinPassword.value;
+  // Campo nascosto = password SEMPRE vuota (evita l'autofill del browser)
+  const typedPassword = joinPassword.hidden ? "" : joinPassword.value;
 
   if (!key || !name) {
     showError("Inserisci la chiave della stanza e il nickname.");
     return;
   }
 
+  // TheLiss usa il modulo di creazione: da qui non si chiede la password admin
+  if (isAdminName(name)) {
+    showError("TheLiss deve utilizzare il modulo di creazione.");
+    return;
+  }
+
   const submitButton = joinForm.querySelector('button[type="submit"]');
   setButtonLoading(submitButton, true);
 
-  authenticate(name, password, auth => {
+  const finish = (auth, passwordUsed) => {
     if (!auth.ok) {
       setButtonLoading(submitButton, false);
       showError(auth.error);
@@ -764,7 +815,7 @@ on(joinForm, "submit", event => {
       session = {
         key: result.key,
         name: result.name,
-        password,
+        password: passwordUsed,
         admin: false,
         token: null
       };
@@ -779,6 +830,28 @@ on(joinForm, "submit", event => {
       joinPassword.hidden = true;
       passwordToggle.textContent = "SONO UN UTENTE AUTORIZZATO";
     });
+  };
+
+  authenticate(name, typedPassword, auth => {
+    // Nickname non registrato ma password presente: entra come ospite
+    if (!auth.ok && typedPassword && isNotRegistered(auth)) {
+      authenticate(name, "", guestAuth => finish(guestAuth, ""));
+      return;
+    }
+
+    // Nickname registrato: solo ora compare il campo password
+    if (!auth.ok && !typedPassword && isPasswordRequired(auth)) {
+      setButtonLoading(submitButton, false);
+
+      joinPassword.hidden = false;
+      passwordToggle.textContent = "NASCONDI PASSWORD";
+      joinPassword.focus();
+
+      showError("Questo nickname è un account registrato: inserisci la password.");
+      return;
+    }
+
+    finish(auth, typedPassword);
   });
 });
 
@@ -856,7 +929,7 @@ on(closeButton, "click", () => {
     "TERMINARE LA SESSIONE? Tutti verranno disconnessi e la stanza sarà eliminata."
   )) return;
 
-  emitWithTimeout("room:close", {}, result => {
+  emitWithTimeout("room:close", undefined, result => {
     if (!result?.ok) {
       showToast(result?.error || "Chiusura non riuscita.");
       return;
