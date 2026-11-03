@@ -271,6 +271,7 @@ io.on("connection", socket => {
         if (!pass) {
           return ack({
             ok: false,
+            code: "PASSWORD_REQUIRED",
             error: "Questo nickname richiede una password."
           });
         }
@@ -315,6 +316,7 @@ io.on("connection", socket => {
       if (pass) {
         return ack({
           ok: false,
+          code: "NOT_REGISTERED",
           error: "Nickname non registrato. Accedi senza password."
         });
       }
